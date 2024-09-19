@@ -6,6 +6,7 @@ from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update, InputFi
 from telegram.ext import Updater, CommandHandler, CallbackQueryHandler, MessageHandler, Filters, CallbackContext
 from googleapiclient.discovery import build
 from google.oauth2.service_account import Credentials
+from google.oauth2 import service_account
 from dotenv import load_dotenv
 from telegram.error import TelegramError, Unauthorized, BadRequest, TimedOut, NetworkError
 
@@ -25,8 +26,20 @@ user_message_ids = {}
 
 # Google Sheets setup
 SCOPE = ['https://www.googleapis.com/auth/spreadsheets', 'https://www.googleapis.com/auth/drive.file']
-SERVICE_ACCOUNT_FILE = 'credentials.json'
-credentials = Credentials.from_service_account_file(SERVICE_ACCOUNT_FILE, scopes=SCOPE)
+creds_info = {
+    "type": "service_account",
+    "project_id": os.getenv('GOOGLE_PROJECT_ID'),
+    "private_key_id": os.getenv('GOOGLE_PRIVATE_KEY_ID'),
+    "private_key": os.getenv('GOOGLE_PRIVATE_KEY').replace('\\n', '\n'),
+    "client_email": os.getenv('GOOGLE_CLIENT_EMAIL'),
+    "client_id": os.getenv('GOOGLE_CLIENT_ID'),
+    "auth_uri": "https://accounts.google.com/o/oauth2/auth",
+    "token_uri": "https://oauth2.googleapis.com/token",
+    "auth_provider_x509_cert_url": "https://www.googleapis.com/oauth2/v1/certs",
+    "client_x509_cert_url": f"https://www.googleapis.com/robot/v1/metadata/x509/{os.getenv('GOOGLE_CLIENT_EMAIL').replace('@', '%40')}"
+}
+
+credentials = service_account.Credentials.from_service_account_info(creds_info, scopes=SCOPE)
 service = build('sheets', 'v4', credentials=credentials)
 
 current_spreadsheet_id = None
@@ -77,6 +90,25 @@ def create_new_sheet():
     except Exception as e:
         logger.error(f"Error creating new sheet: {e}")
         return None
+
+def help_command(update: Update, context: CallbackContext):
+    if update.message.from_user.id not in ADMIN_IDS and update.message.from_user.id != MAIN_ADMIN_ID:
+        update.message.reply_text("You are not authorized to perform this action.")
+        return
+
+    try:
+        help_text = "Available commands for admins:\n"
+        help_text += "/start - Start the bot and display the main menu\n"
+        help_text += "/newweek - Create a new sheet for the current week\n"
+        help_text += "/exportcsv - Export the current week's responses as a CSV file\n"
+        help_text += "/listweeks - List all the weeks' Google Sheets\n"
+        help_text += "/addadmin <user_id> - Add a sub-admin by providing their user ID\n"
+        help_text += "/removeadmin <user_id> - Remove a sub-admin by providing their user ID\n"
+        help_text += "/editquestions - Display current questions or edit them using 'add' or 'remove' commands\n"
+        update.message.reply_text(help_text)
+    except Exception as e:
+        logger.error(f"Error in help command: {e}")
+        update.message.reply_text("An error occurred while displaying the help message. Please try again later.")
 
 def start(update: Update, context: CallbackContext):
     try:
@@ -202,7 +234,7 @@ def receive_response(update: Update, context: CallbackContext):
             send_question(update.message.chat_id, len(responses[user_id]), context)
         else:
             try:
-                save_response_to_sheet(user, responses[user_id])
+                save_response_to_sheet(update, context, user, responses[user_id])
                 del responses[user_id]
 
                 # Delete the user's message containing their last response
@@ -225,30 +257,30 @@ def receive_response(update: Update, context: CallbackContext):
     else:
         context.bot.send_message(chat_id=update.message.chat_id, text="Please start the form by clicking the button.")
 
-def save_response_to_sheet(user, user_responses):
-    global current_spreadsheet_id, last_sheet_creation_date
-
-    if not current_spreadsheet_id or (datetime.now() - last_sheet_creation_date).days >= 7:
-        current_spreadsheet_id = create_new_sheet()
-
-    if not current_spreadsheet_id:
-        raise Exception("No active spreadsheet")
-
+def save_response_to_sheet(update: Update, context: CallbackContext, user, user_responses):
+    
+    # Save the user's responses to the Google Sheet
     sheet = service.spreadsheets()
-    row = [
-        str(user.id),
-        user.full_name,
-        user.username if user.username else "N/A",
-        str(datetime.now())
-    ] + user_responses
+    values = [
+        [user.id, f"{user.first_name} {user.last_name}", user.username, datetime.now().strftime("%Y-%m-%d %H:%M:%S")] + user_responses
+    ]
+    body = {
+        'values': values
+    }
+    sheet.values().append(spreadsheetId=current_spreadsheet_id, range='Sheet1', valueInputOption='RAW', body=body).execute()
 
-    body = {'values': [row]}
-    sheet.values().append(
-        spreadsheetId=current_spreadsheet_id,
-        range='Sheet1!A1',
-        valueInputOption='RAW',
-        body=body
-    ).execute()
+
+    # Send a message to the admin
+    admin_message = f"{user.first_name} [{user.id}] answered the \"Gathering weekly updates\" form."
+    keyboard = [[InlineKeyboardButton("See Answers", callback_data=f'see_answers_{user.id}')]]
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    for admin_id in ADMIN_IDS + [MAIN_ADMIN_ID]:
+        try:
+            context.bot.send_message(chat_id=admin_id, text=admin_message, reply_markup=reply_markup)
+        except Exception as e:
+            logger.warning(f"Failed to send message to admin {admin_id}: {e}")
+
+
 
 def new_week(update: Update, context: CallbackContext):
     if update.message.from_user.id not in ADMIN_IDS and update.message.from_user.id != MAIN_ADMIN_ID:
@@ -300,6 +332,34 @@ def list_weeks(update: Update, context: CallbackContext):
     except Exception as e:
         logger.error(f"Error in list_weeks command: {e}")
         update.message.reply_text("An error occurred while listing weeks. Please try again later.")
+
+def see_answers(update: Update, context: CallbackContext):
+    query = update.callback_query
+    user_id = int(query.data.split('_')[-1])
+
+    # Retrieve the user's responses from the Google Sheet
+    sheet = service.spreadsheets()
+    result = sheet.values().get(spreadsheetId=current_spreadsheet_id, range='Sheet1').execute()
+    rows = result.get('values', [])
+
+    user_responses = None
+    user_name = None
+    timestamp = None
+    for row in rows[1:]:  # Skip the header row
+        if int(row[0]) == user_id:
+            user_name = row[1]  # Get the user's name from the second column
+            timestamp = row[3]  # Get the timestamp from the fourth column
+            user_responses = row[4:]  # Assumes start from index 4
+            break
+
+    if user_responses:
+        response_text = f"Answer from {user_name} on {timestamp}\n\n"
+        for question, response in zip(questions, user_responses):
+            response_text += f"{question}\nAnswer: {response}\n\n"
+        query.message.reply_text(response_text)
+    else:
+        query.message.reply_text("User's responses not found.")
+
 
 def add_admin(update: Update, context: CallbackContext):
     if update.message.from_user.id != MAIN_ADMIN_ID:
@@ -369,7 +429,9 @@ def main():
     dp.add_handler(CommandHandler("exportcsv", export_as_csv))
     dp.add_handler(CommandHandler("listweeks", list_weeks))
     dp.add_handler(CommandHandler("addadmin", add_admin))
+    dp.add_handler(CommandHandler("help", help_command))
     dp.add_handler(CommandHandler("removeadmin", remove_admin))
+    dp.add_handler(CallbackQueryHandler(see_answers, pattern='^see_answers_'))
     dp.add_handler(CommandHandler("editquestions", edit_questions))
     dp.add_handler(CallbackQueryHandler(button))
     dp.add_handler(MessageHandler(Filters.text & ~Filters.command, receive_response))
