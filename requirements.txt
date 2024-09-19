@@ -4,3 +4,5 @@ google-auth-oauthlib==0.4.6
 google-auth-httplib2==0.1.0
 google-api-python-client==2.31.0
 python-dotenv==0.19.2
+flask
+waitress

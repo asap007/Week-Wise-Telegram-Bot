@@ -1,6 +1,8 @@
 import os
 import csv
 import logging
+from flask import Flask
+from waitress import serve
 from datetime import datetime
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update, InputFile, Message
 from telegram.ext import Updater, CommandHandler, CallbackQueryHandler, MessageHandler, Filters, CallbackContext
@@ -16,6 +18,13 @@ logger = logging.getLogger(__name__)
 
 # Load environment variables
 load_dotenv()
+
+app = Flask(__name__)
+
+@app.route('/')
+def index():
+    return "Bot is running!"
+
 
 TELEGRAM_TOKEN = os.getenv('TELEGRAM_TOKEN')
 MAIN_ADMIN_ID = int(os.getenv('MAIN_ADMIN_ID'))  # Single main admin
@@ -408,7 +417,6 @@ def help_command(update: Update, context: CallbackContext):
         help_text += "/listweeks - List all the weeks' Google Sheets\n"
         help_text += "/addadmin <user_id> - Add a sub-admin by providing their user ID\n"
         help_text += "/removeadmin <user_id> - Remove a sub-admin by providing their user ID\n"
-        help_text += "/broadcast <message> - Send message to all the users in one go\n"
         help_text += "/editquestions - Display current questions or edit them using 'add' or 'remove' commands\n"
         update.message.reply_text(help_text)
     except Exception as e:
@@ -422,44 +430,17 @@ def add_admin(update: Update, context: CallbackContext):
         return
 
     try:
-        new_admin_info = context.args[0]
-        
-        if new_admin_info.startswith('@'):
-            # Username provided
-            new_admin_username = new_admin_info[1:]
-            try:
-                new_admin = context.bot.get_chat_member(chat_id='@' + new_admin_username, user_id=new_admin_username)
-                new_admin_id = new_admin.user.id
-            except BadRequest:
-                update.message.reply_text(f"User @{new_admin_username} not found.")
-                return
-        else:
-            # User ID provided
-            new_admin_id = int(new_admin_info)
-            try:
-                new_admin = context.bot.get_chat_member(chat_id=update.message.chat_id, user_id=new_admin_id)
-                new_admin_username = new_admin.user.username
-            except BadRequest:
-                update.message.reply_text(f"User with ID {new_admin_id} not found.")
-                return
-        
+        new_admin_id = int(context.args[0])
         if new_admin_id not in ADMIN_IDS:
             ADMIN_IDS.append(new_admin_id)
-            if new_admin_username:
-                update.message.reply_text(f"User @{new_admin_username} has been added as a sub-admin.")
-            else:
-                update.message.reply_text(f"User {new_admin_id} has been added as a sub-admin.")
+            update.message.reply_text(f"User {new_admin_id} has been added as a sub-admin.")
         else:
-            if new_admin_username:
-                update.message.reply_text(f"User @{new_admin_username} is already a sub-admin.")
-            else:
-                update.message.reply_text(f"User {new_admin_id} is already a sub-admin.")
+            update.message.reply_text(f"User {new_admin_id} is already a sub-admin.")
     except (IndexError, ValueError):
-        update.message.reply_text("Please provide a valid user ID or username to add as a sub-admin.")
+        update.message.reply_text("Please provide a valid user ID to add as a sub-admin.")
     except Exception as e:
         logger.error(f"Error in add_admin command: {e}")
         update.message.reply_text("An error occurred while adding an admin. Please try again later.")
-
 
 def remove_admin(update: Update, context: CallbackContext):
     if update.message.from_user.id != MAIN_ADMIN_ID:
@@ -467,31 +448,17 @@ def remove_admin(update: Update, context: CallbackContext):
         return
 
     try:
-        admin_info = context.args[0]
-        
-        if admin_info.startswith('@'):
-            # Username provided
-            admin_username = admin_info[1:]
-            admin = next((admin for admin in ADMIN_IDS if str(admin).endswith(admin_username)), None)
-            if admin:
-                ADMIN_IDS.remove(admin)
-                update.message.reply_text(f"User @{admin_username} has been removed as a sub-admin.")
-            else:
-                update.message.reply_text(f"User @{admin_username} is not a sub-admin.")
+        admin_id = int(context.args[0])
+        if admin_id in ADMIN_IDS:
+            ADMIN_IDS.remove(admin_id)
+            update.message.reply_text(f"User {admin_id} has been removed as a sub-admin.")
         else:
-            # User ID provided
-            admin_id = int(admin_info)
-            if admin_id in ADMIN_IDS:
-                ADMIN_IDS.remove(admin_id)
-                update.message.reply_text(f"User {admin_id} has been removed as a sub-admin.")
-            else:
-                update.message.reply_text(f"User {admin_id} is not a sub-admin.")
+            update.message.reply_text(f"User {admin_id} is not a sub-admin.")
     except (IndexError, ValueError):
-        update.message.reply_text("Please provide a valid user ID or username to remove as a sub-admin.")
+        update.message.reply_text("Please provide a valid user ID to remove as a sub-admin.")
     except Exception as e:
         logger.error(f"Error in remove_admin command: {e}")
         update.message.reply_text("An error occurred while removing an admin. Please try again later.")
-
 
 def error_handler(update: Update, context: CallbackContext):
     logger.error(f"Update {update} caused error {context.error}")
@@ -540,5 +507,11 @@ def main():
     updater.start_polling(drop_pending_updates=True)
     updater.idle()
 
+    # Start the Flask app using Waitress
+    port = int(os.environ.get('PORT', 5000))
+    serve(app, host='0.0.0.0', port=port)
+
 if __name__ == '__main__':
     main()
+
+
