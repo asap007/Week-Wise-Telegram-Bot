@@ -63,6 +63,7 @@ questions = [
     "4) Any other activities you want to mention:"
 ]
 responses = {}
+spreadsheet_ids = {}
 
 def create_new_sheet():
     global current_spreadsheet_id, week_count, last_sheet_creation_date
@@ -95,6 +96,7 @@ def create_new_sheet():
             body={'type': 'user', 'role': 'writer', 'emailAddress': USER_EMAIL}
         ).execute()
         
+        spreadsheet_ids[week_count] = current_spreadsheet_id 
         week_count += 1
         last_sheet_creation_date = datetime.now()
         return current_spreadsheet_id
@@ -337,8 +339,8 @@ def list_weeks(update: Update, context: CallbackContext):
 
     try:
         sheet_list = f"Weeks' Google Sheets:\n"
-        for i in range(1, week_count):
-            sheet_list += f"Week {i}: https://docs.google.com/spreadsheets/d/{current_spreadsheet_id}\n"
+        for week, sheet_id in spreadsheet_ids.items():
+            sheet_list += f"Week {week}: https://docs.google.com/spreadsheets/d/{sheet_id}\n"
         update.message.reply_text(sheet_list)
     except Exception as e:
         logger.error(f"Error in list_weeks command: {e}")
