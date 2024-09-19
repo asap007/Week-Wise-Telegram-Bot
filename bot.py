@@ -2,7 +2,7 @@ import os
 import csv
 import logging
 from datetime import datetime
-from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update, InputFile
+from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update, InputFile, Message
 from telegram.ext import Updater, CommandHandler, CallbackQueryHandler, MessageHandler, Filters, CallbackContext
 from googleapiclient.discovery import build
 from google.oauth2.service_account import Credentials
@@ -21,6 +21,8 @@ MAIN_ADMIN_ID = int(os.getenv('MAIN_ADMIN_ID'))  # Single main admin
 ADMIN_IDS = [int(x) for x in os.getenv('ADMIN_IDS', '').split(',') if x]  # Initial list of sub-admins
 USER_EMAIL = os.getenv('USER_EMAIL')
 
+user_message_ids = {}
+
 # Google Sheets setup
 SCOPE = ['https://www.googleapis.com/auth/spreadsheets', 'https://www.googleapis.com/auth/drive.file']
 SERVICE_ACCOUNT_FILE = 'credentials.json'
@@ -29,6 +31,7 @@ service = build('sheets', 'v4', credentials=credentials)
 
 current_spreadsheet_id = None
 week_count = 1
+last_sheet_creation_date = None
 questions = [
     "1) Brief summary of your week:",
     "2) New projects you are working on:",
@@ -38,7 +41,7 @@ questions = [
 responses = {}
 
 def create_new_sheet():
-    global current_spreadsheet_id, week_count
+    global current_spreadsheet_id, week_count, last_sheet_creation_date
     try:
         header = ['User ID', 'Name', 'Username', 'Date'] + questions
         spreadsheet = {
@@ -69,6 +72,7 @@ def create_new_sheet():
         ).execute()
         
         week_count += 1
+        last_sheet_creation_date = datetime.now()
         return current_spreadsheet_id
     except Exception as e:
         logger.error(f"Error creating new sheet: {e}")
@@ -78,10 +82,19 @@ def start(update: Update, context: CallbackContext):
     try:
         keyboard = [[InlineKeyboardButton("Gathering Weekly Updates", callback_data='start_form')]]
         reply_markup = InlineKeyboardMarkup(keyboard)
-        update.message.reply_text("Hi\n\nRegister your weekly activity overview by clicking the button below. \n\nCarefully read each question before you answer to make the process easier for everyone.", reply_markup=reply_markup)
+        if update.message:
+            update.message.reply_text("Hi\n\nRegister your weekly activity overview by clicking the button below. \n\nCarefully read each question before you answer to make the process easier for everyone.", reply_markup=reply_markup)
+        else:
+            context.bot.send_message(chat_id=update.callback_query.from_user.id,
+                                     text="Hi\n\nRegister your weekly activity overview by clicking the button below. \n\nCarefully read each question before you answer to make the process easier for everyone.",
+                                     reply_markup=reply_markup)
     except Exception as e:
         logger.error(f"Error in start command: {e}")
-        update.message.reply_text("An error occurred. Please try again later.")
+        if update.message:
+            update.message.reply_text("An error occurred. Please try again later.")
+        else:
+            context.bot.send_message(chat_id=update.callback_query.from_user.id,
+                                     text="An error occurred. Please try again later.")
 
 def edit_questions(update: Update, context: CallbackContext):
     if update.message.from_user.id != MAIN_ADMIN_ID:
@@ -115,10 +128,64 @@ def button(update: Update, context: CallbackContext):
     query.answer()
 
     user_id = query.from_user.id
+    chat_id = query.message.chat_id
+
     if query.data == 'start_form':
         responses[user_id] = []
-        query.message.reply_text(questions[0])
-        return 'waiting_for_response'
+        # Delete the `/start` message
+        if query.message:
+            context.bot.delete_message(chat_id=chat_id, message_id=query.message.message_id)
+        # Clear previous message ID
+        context.user_data['prev_message_id'] = None
+        send_question(chat_id, 0, context)
+    elif query.data == 'back_to_start':
+        if user_id in responses:
+            del responses[user_id]
+        # Delete the current message (Back to Start button)
+        context.bot.delete_message(chat_id=chat_id, message_id=query.message.message_id)
+        # Clear previous message ID
+        context.user_data['prev_message_id'] = None
+        start(update, context)
+    elif query.data == 'back_to_main_menu':
+        # Delete the form completion message
+        context.bot.delete_message(chat_id=chat_id, message_id=query.message.message_id)
+        # Clear previous message ID
+        context.user_data['prev_message_id'] = None
+        start(update, context)
+    elif query.data.startswith('back_to_question_'):
+        question_index = int(query.data.split('_')[-1])
+        responses[user_id] = responses[user_id][:question_index]
+        # Delete the current question message
+        context.bot.delete_message(chat_id=chat_id, message_id=query.message.message_id)
+        # Send the previous question
+        send_question(chat_id, question_index, context)
+
+def send_question(chat_id, question_index, context):
+    keyboard = []
+    if question_index > 0:
+        keyboard.append([InlineKeyboardButton("⬅️ Back", callback_data=f'back_to_question_{question_index-1}')])
+    else:
+        keyboard.append([InlineKeyboardButton("⬅️ Back to Start", callback_data='back_to_start')])
+    
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    question_text = questions[question_index]
+    
+    try:
+        # Delete the previous question message to avoid duplication
+        prev_message_id = context.user_data.get('prev_message_id')
+        if prev_message_id:
+            try:
+                context.bot.delete_message(chat_id=chat_id, message_id=prev_message_id)
+            except Exception as e:
+                logger.warning(f"Could not delete message {prev_message_id}: {e}")
+        # Send the new question
+        new_message = context.bot.send_message(chat_id=chat_id, text=question_text, reply_markup=reply_markup)
+        # Save the new message's ID
+        context.user_data['prev_message_id'] = new_message.message_id
+    except Exception as e:
+        logger.error(f"Error sending question: {e}")
+        context.bot.send_message(chat_id=chat_id, text="An error occurred. Please try again.")
+
 
 def receive_response(update: Update, context: CallbackContext):
     user = update.message.from_user
@@ -129,20 +196,41 @@ def receive_response(update: Update, context: CallbackContext):
         responses[user_id].append(current_response)
 
         if len(responses[user_id]) < len(questions):
-            next_question = questions[len(responses[user_id])]
-            update.message.reply_text(next_question)
+            # Delete the user's message containing their response
+            context.bot.delete_message(chat_id=update.message.chat_id, message_id=update.message.message_id)
+            # Send the next question
+            send_question(update.message.chat_id, len(responses[user_id]), context)
         else:
             try:
                 save_response_to_sheet(user, responses[user_id])
                 del responses[user_id]
-                update.message.reply_text("Your responses have been recorded!")
+
+                # Delete the user's message containing their last response
+                context.bot.delete_message(chat_id=update.message.chat_id, message_id=update.message.message_id)
+                # Delete the previous question message
+                prev_message_id = context.user_data.get('prev_message_id')
+                if prev_message_id:
+                    context.bot.delete_message(chat_id=update.message.chat_id, message_id=prev_message_id)
+                    context.user_data['prev_message_id'] = None
+
+                # Display final message
+                keyboard = [[InlineKeyboardButton("Back to Main Menu", callback_data='back_to_start')]]
+                reply_markup = InlineKeyboardMarkup(keyboard)
+                final_msg = context.bot.send_message(chat_id=update.message.chat_id, text="✅ Form completed!", reply_markup=reply_markup)
+                # Store the final message ID in case we need to delete it
+                context.user_data['prev_message_id'] = final_msg.message_id
             except Exception as e:
                 logger.error(f"Error saving response: {e}")
-                update.message.reply_text("An error occurred while saving your response. Please try again later.")
+                context.bot.send_message(chat_id=update.message.chat_id, text="An error occurred while saving your response. Please try again later.")
     else:
-        update.message.reply_text("Please start the form by clicking the button.")
+        context.bot.send_message(chat_id=update.message.chat_id, text="Please start the form by clicking the button.")
 
 def save_response_to_sheet(user, user_responses):
+    global current_spreadsheet_id, last_sheet_creation_date
+
+    if not current_spreadsheet_id or (datetime.now() - last_sheet_creation_date).days >= 7:
+        current_spreadsheet_id = create_new_sheet()
+
     if not current_spreadsheet_id:
         raise Exception("No active spreadsheet")
 
@@ -270,7 +358,7 @@ def error_handler(update: Update, context: CallbackContext):
         logger.info(f"Telegram error for chat {update.effective_chat.id}")
 
 def main():
-    global current_spreadsheet_id
+    global current_spreadsheet_id, last_sheet_creation_date
     current_spreadsheet_id = create_new_sheet()  # Initialize with a new sheet for the current week
 
     updater = Updater(TELEGRAM_TOKEN, use_context=True)
