@@ -333,6 +333,40 @@ def list_weeks(update: Update, context: CallbackContext):
         logger.error(f"Error in list_weeks command: {e}")
         update.message.reply_text("An error occurred while listing weeks. Please try again later.")
 
+def broadcast(update: Update, context: CallbackContext):
+    if update.message.from_user.id not in ADMIN_IDS and update.message.from_user.id != MAIN_ADMIN_ID:
+        update.message.reply_text("You are not authorized to perform this action.")
+        return
+
+    try:
+        # Get the message to broadcast from the command arguments
+        broadcast_message = " ".join(context.args)
+
+        if not broadcast_message:
+            update.message.reply_text("Please provide a message to broadcast.")
+            return
+
+        # Retrieve all user IDs from the Google Sheet
+        sheet = service.spreadsheets()
+        result = sheet.values().get(spreadsheetId=current_spreadsheet_id, range='Sheet1').execute()
+        rows = result.get('values', [])
+
+        # Extract unique user IDs from the first column
+        user_ids = set(int(row[0]) for row in rows[1:])  # Skip the header row
+
+        # Send the broadcast message to each user
+        for user_id in user_ids:
+            try:
+                context.bot.send_message(chat_id=user_id, text=broadcast_message)
+            except Exception as e:
+                logger.warning(f"Failed to send broadcast message to user {user_id}: {e}")
+
+        update.message.reply_text(f"Broadcast message sent to {len(user_ids)} users.")
+    except Exception as e:
+        logger.error(f"Error in broadcast command: {e}")
+        update.message.reply_text("An error occurred while sending the broadcast message. Please try again later.")
+
+
 def see_answers(update: Update, context: CallbackContext):
     query = update.callback_query
     user_id = int(query.data.split('_')[-1])
@@ -344,21 +378,42 @@ def see_answers(update: Update, context: CallbackContext):
 
     user_responses = None
     user_name = None
-    timestamp = None
+    latest_timestamp = None
     for row in rows[1:]:  # Skip the header row
         if int(row[0]) == user_id:
-            user_name = row[1]  # Get the user's name from the second column
-            timestamp = row[3]  # Get the timestamp from the fourth column
-            user_responses = row[4:]  # Assumes start from index 4
-            break
+            timestamp = datetime.strptime(row[3], "%Y-%m-%d %H:%M:%S")  # Parse the timestamp
+            if latest_timestamp is None or timestamp > latest_timestamp:
+                latest_timestamp = timestamp
+                user_name = row[1]  # Get the user's name from the second column
+                user_responses = row[4:]  # Assumes start from index 4
 
     if user_responses:
-        response_text = f"Answer from {user_name} on {timestamp}\n\n"
+        response_text = f"Latest answer from {user_name} on {latest_timestamp}\n\n"
         for question, response in zip(questions, user_responses):
             response_text += f"{question}\nAnswer: {response}\n\n"
         query.message.reply_text(response_text)
     else:
         query.message.reply_text("User's responses not found.")
+
+def help_command(update: Update, context: CallbackContext):
+    if update.message.from_user.id not in ADMIN_IDS and update.message.from_user.id != MAIN_ADMIN_ID:
+        update.message.reply_text("You are not authorized to perform this action.")
+        return
+
+    try:
+        help_text = "Available commands for admins:\n"
+        help_text += "/start - Start the bot and display the main menu\n"
+        help_text += "/newweek - Create a new sheet for the current week\n"
+        help_text += "/exportcsv - Export the current week's responses as a CSV file\n"
+        help_text += "/listweeks - List all the weeks' Google Sheets\n"
+        help_text += "/addadmin <user_id> - Add a sub-admin by providing their user ID\n"
+        help_text += "/removeadmin <user_id> - Remove a sub-admin by providing their user ID\n"
+        help_text += "/broadcast <message> - Send message to all the users in one go\n"
+        help_text += "/editquestions - Display current questions or edit them using 'add' or 'remove' commands\n"
+        update.message.reply_text(help_text)
+    except Exception as e:
+        logger.error(f"Error in help command: {e}")
+        update.message.reply_text("An error occurred while displaying the help message. Please try again later.")
 
 
 def add_admin(update: Update, context: CallbackContext):
@@ -367,17 +422,44 @@ def add_admin(update: Update, context: CallbackContext):
         return
 
     try:
-        new_admin_id = int(context.args[0])
+        new_admin_info = context.args[0]
+        
+        if new_admin_info.startswith('@'):
+            # Username provided
+            new_admin_username = new_admin_info[1:]
+            try:
+                new_admin = context.bot.get_chat_member(chat_id='@' + new_admin_username, user_id=new_admin_username)
+                new_admin_id = new_admin.user.id
+            except BadRequest:
+                update.message.reply_text(f"User @{new_admin_username} not found.")
+                return
+        else:
+            # User ID provided
+            new_admin_id = int(new_admin_info)
+            try:
+                new_admin = context.bot.get_chat_member(chat_id=update.message.chat_id, user_id=new_admin_id)
+                new_admin_username = new_admin.user.username
+            except BadRequest:
+                update.message.reply_text(f"User with ID {new_admin_id} not found.")
+                return
+        
         if new_admin_id not in ADMIN_IDS:
             ADMIN_IDS.append(new_admin_id)
-            update.message.reply_text(f"User {new_admin_id} has been added as a sub-admin.")
+            if new_admin_username:
+                update.message.reply_text(f"User @{new_admin_username} has been added as a sub-admin.")
+            else:
+                update.message.reply_text(f"User {new_admin_id} has been added as a sub-admin.")
         else:
-            update.message.reply_text(f"User {new_admin_id} is already a sub-admin.")
+            if new_admin_username:
+                update.message.reply_text(f"User @{new_admin_username} is already a sub-admin.")
+            else:
+                update.message.reply_text(f"User {new_admin_id} is already a sub-admin.")
     except (IndexError, ValueError):
-        update.message.reply_text("Please provide a valid user ID to add as a sub-admin.")
+        update.message.reply_text("Please provide a valid user ID or username to add as a sub-admin.")
     except Exception as e:
         logger.error(f"Error in add_admin command: {e}")
         update.message.reply_text("An error occurred while adding an admin. Please try again later.")
+
 
 def remove_admin(update: Update, context: CallbackContext):
     if update.message.from_user.id != MAIN_ADMIN_ID:
@@ -385,17 +467,31 @@ def remove_admin(update: Update, context: CallbackContext):
         return
 
     try:
-        admin_id = int(context.args[0])
-        if admin_id in ADMIN_IDS:
-            ADMIN_IDS.remove(admin_id)
-            update.message.reply_text(f"User {admin_id} has been removed as a sub-admin.")
+        admin_info = context.args[0]
+        
+        if admin_info.startswith('@'):
+            # Username provided
+            admin_username = admin_info[1:]
+            admin = next((admin for admin in ADMIN_IDS if str(admin).endswith(admin_username)), None)
+            if admin:
+                ADMIN_IDS.remove(admin)
+                update.message.reply_text(f"User @{admin_username} has been removed as a sub-admin.")
+            else:
+                update.message.reply_text(f"User @{admin_username} is not a sub-admin.")
         else:
-            update.message.reply_text(f"User {admin_id} is not a sub-admin.")
+            # User ID provided
+            admin_id = int(admin_info)
+            if admin_id in ADMIN_IDS:
+                ADMIN_IDS.remove(admin_id)
+                update.message.reply_text(f"User {admin_id} has been removed as a sub-admin.")
+            else:
+                update.message.reply_text(f"User {admin_id} is not a sub-admin.")
     except (IndexError, ValueError):
-        update.message.reply_text("Please provide a valid user ID to remove as a sub-admin.")
+        update.message.reply_text("Please provide a valid user ID or username to remove as a sub-admin.")
     except Exception as e:
         logger.error(f"Error in remove_admin command: {e}")
         update.message.reply_text("An error occurred while removing an admin. Please try again later.")
+
 
 def error_handler(update: Update, context: CallbackContext):
     logger.error(f"Update {update} caused error {context.error}")
@@ -430,6 +526,8 @@ def main():
     dp.add_handler(CommandHandler("listweeks", list_weeks))
     dp.add_handler(CommandHandler("addadmin", add_admin))
     dp.add_handler(CommandHandler("help", help_command))
+    dp.add_handler(CommandHandler("help", help_command))
+    dp.add_handler(CommandHandler("broadcast", broadcast))
     dp.add_handler(CommandHandler("removeadmin", remove_admin))
     dp.add_handler(CallbackQueryHandler(see_answers, pattern='^see_answers_'))
     dp.add_handler(CommandHandler("editquestions", edit_questions))
