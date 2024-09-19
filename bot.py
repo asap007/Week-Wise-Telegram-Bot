@@ -1,7 +1,7 @@
 import os
 import csv
 import logging
-from flask import Flask
+from flask import Flask, jsonify
 from waitress import serve
 from datetime import datetime
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update, InputFile, Message
@@ -19,11 +19,13 @@ logger = logging.getLogger(__name__)
 # Load environment variables
 load_dotenv()
 
+# Initialize Flask app
 app = Flask(__name__)
 
+# Define a route for the root path
 @app.route('/')
-def index():
-    return "Bot is running!"
+def home():
+    return jsonify({"message": "Bot is running"})
 
 
 TELEGRAM_TOKEN = os.getenv('TELEGRAM_TOKEN')
@@ -510,6 +512,7 @@ def main():
     # Start the Flask app using Waitress
     port = int(os.environ.get('PORT', 5000))
     serve(app, host='0.0.0.0', port=port)
+
 
 if __name__ == '__main__':
     main()
