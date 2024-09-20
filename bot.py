@@ -421,7 +421,10 @@ def help_command(update: Update, context: CallbackContext):
         help_text += "/listweeks - List all the weeks' Google Sheets\n"
         help_text += "/addadmin <user_id> - Add a sub-admin by providing their user ID\n"
         help_text += "/removeadmin <user_id> - Remove a sub-admin by providing their user ID\n"
+        help_text += "/broadcast <message> - Message everyone at once in one go\n"
         help_text += "/editquestions - Display current questions or edit them using 'add' or 'remove' commands\n"
+        help_text += "/editquestions add <question> - Add a new question\n"
+        help_text += "/editquestions remove <question number> - Remove a existing question\n"
         update.message.reply_text(help_text)
     except Exception as e:
         logger.error(f"Error in help command: {e}")
