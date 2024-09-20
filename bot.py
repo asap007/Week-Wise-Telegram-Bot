@@ -1,6 +1,7 @@
 import os
 import csv
 import logging
+import threading
 from flask import Flask, jsonify
 from datetime import datetime
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update, InputFile, Message
@@ -483,10 +484,7 @@ def error_handler(update: Update, context: CallbackContext):
         # handle all other telegram related errors
         logger.info(f"Telegram error for chat {update.effective_chat.id}")
 
-def main():
-    global current_spreadsheet_id, last_sheet_creation_date
-    current_spreadsheet_id = create_new_sheet()  # Initialize with a new sheet for the current week
-
+def run_bot():
     updater = Updater(TELEGRAM_TOKEN, use_context=True)
     dp = updater.dispatcher
 
@@ -510,11 +508,17 @@ def main():
     updater.start_polling(drop_pending_updates=True)
     updater.idle()
 
-     # Run the Flask app
+def main():
+    global current_spreadsheet_id, last_sheet_creation_date
+    current_spreadsheet_id = create_new_sheet()  # Initialize with a new sheet for the current week
+
+    # Start the bot in a separate thread
+    bot_thread = threading.Thread(target=run_bot)
+    bot_thread.start()
+
+    # Run the Flask app in the main thread
     port = int(os.environ.get('PORT', 5000))
     app.run(host='0.0.0.0', port=port)
-
-
 
 if __name__ == '__main__':
     main()
