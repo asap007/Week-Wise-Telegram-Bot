@@ -2,7 +2,6 @@ import os
 import csv
 import logging
 from flask import Flask, jsonify
-from waitress import serve
 from datetime import datetime
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update, InputFile, Message
 from telegram.ext import Updater, CommandHandler, CallbackQueryHandler, MessageHandler, Filters, CallbackContext
@@ -511,9 +510,10 @@ def main():
     updater.start_polling(drop_pending_updates=True)
     updater.idle()
 
-    # Start the Flask app using Waitress
+     # Run the Flask app
     port = int(os.environ.get('PORT', 5000))
-    serve(app, host='0.0.0.0', port=port)
+    app.run(host='0.0.0.0', port=port)
+
 
 
 if __name__ == '__main__':
