@@ -1,5 +1,6 @@
 import os
 import csv
+import json
 import logging
 import threading
 from flask import Flask, jsonify
@@ -29,6 +30,7 @@ def home():
 
 
 TELEGRAM_TOKEN = os.getenv('TELEGRAM_TOKEN')
+DATA_FILE = 'bot_data.json'
 MAIN_ADMIN_ID = int(os.getenv('MAIN_ADMIN_ID'))  # Single main admin
 ADMIN_IDS = [int(x) for x in os.getenv('ADMIN_IDS', '').split(',') if x]  # Initial list of sub-admins
 USER_EMAIL = os.getenv('USER_EMAIL')
@@ -37,24 +39,15 @@ user_message_ids = {}
 
 # Google Sheets setup
 SCOPE = ['https://www.googleapis.com/auth/spreadsheets', 'https://www.googleapis.com/auth/drive.file']
-creds_info = {
-    "type": "service_account",
-    "project_id": os.getenv('GOOGLE_PROJECT_ID'),
-    "private_key_id": os.getenv('GOOGLE_PRIVATE_KEY_ID'),
-    "private_key": os.getenv('GOOGLE_PRIVATE_KEY').replace('\\n', '\n'),
-    "client_email": os.getenv('GOOGLE_CLIENT_EMAIL'),
-    "client_id": os.getenv('GOOGLE_CLIENT_ID'),
-    "auth_uri": "https://accounts.google.com/o/oauth2/auth",
-    "token_uri": "https://oauth2.googleapis.com/token",
-    "auth_provider_x509_cert_url": "https://www.googleapis.com/oauth2/v1/certs",
-    "client_x509_cert_url": f"https://www.googleapis.com/robot/v1/metadata/x509/{os.getenv('GOOGLE_CLIENT_EMAIL').replace('@', '%40')}"
-}
-
-credentials = service_account.Credentials.from_service_account_info(creds_info, scopes=SCOPE)
+# Load credentials from the JSON file
+credentials = service_account.Credentials.from_service_account_file(
+    'credentials.json', scopes=SCOPE
+)
+# Build the service
 service = build('sheets', 'v4', credentials=credentials)
 
+
 current_spreadsheet_id = None
-week_count = 1
 last_sheet_creation_date = None
 questions = [
     "1) Brief summary of your week:",
@@ -64,6 +57,32 @@ questions = [
 ]
 responses = {}
 spreadsheet_ids = {}
+
+
+def save_data():
+    data = {
+        'spreadsheet_ids': spreadsheet_ids,
+        'week_count': week_count,
+        'last_sheet_creation_date': last_sheet_creation_date.isoformat() if last_sheet_creation_date else None
+    }
+    with open(DATA_FILE, 'w') as f:
+        json.dump(data, f)
+
+def load_data():
+    global spreadsheet_ids, week_count, last_sheet_creation_date, current_spreadsheet_id
+    if os.path.exists(DATA_FILE):
+        with open(DATA_FILE, 'r') as f:
+            data = json.load(f)
+        spreadsheet_ids = data['spreadsheet_ids']
+        week_count = data['week_count']
+        last_sheet_creation_date = datetime.fromisoformat(data['last_sheet_creation_date']) if data['last_sheet_creation_date'] else None
+        current_spreadsheet_id = spreadsheet_ids.get(str(week_count))
+    else:
+        spreadsheet_ids = {}
+        week_count = 1
+        last_sheet_creation_date = None
+        current_spreadsheet_id = None
+
 
 def create_new_sheet():
     global current_spreadsheet_id, week_count, last_sheet_creation_date
@@ -99,6 +118,7 @@ def create_new_sheet():
         spreadsheet_ids[week_count] = current_spreadsheet_id 
         week_count += 1
         last_sheet_creation_date = datetime.now()
+        save_data()
         return current_spreadsheet_id
     except Exception as e:
         logger.error(f"Error creating new sheet: {e}")
@@ -299,11 +319,10 @@ def new_week(update: Update, context: CallbackContext):
     if update.message.from_user.id not in ADMIN_IDS and update.message.from_user.id != MAIN_ADMIN_ID:
         update.message.reply_text("You are not authorized to perform this action.")
         return
-
     try:
         new_sheet_id = create_new_sheet()
         if new_sheet_id:
-            update.message.reply_text(f"New week started! Responses will be saved to sheet: {new_sheet_id}")
+            update.message.reply_text(f"New week (Week {week_count - 1}) started! Responses will be saved to sheet: {new_sheet_id}")
         else:
             update.message.reply_text("Failed to create a new sheet. Please try again later.")
     except Exception as e:
@@ -336,7 +355,6 @@ def list_weeks(update: Update, context: CallbackContext):
     if update.message.from_user.id not in ADMIN_IDS and update.message.from_user.id != MAIN_ADMIN_ID:
         update.message.reply_text("You are not authorized to perform this action.")
         return
-
     try:
         sheet_list = f"Weeks' Google Sheets:\n"
         for week, sheet_id in spreadsheet_ids.items():
@@ -513,7 +531,9 @@ def run_bot():
 
 def main():
     global current_spreadsheet_id, last_sheet_creation_date
-    current_spreadsheet_id = create_new_sheet()  # Initialize with a new sheet for the current week
+    load_data()  # Load saved data
+    if not current_spreadsheet_id:
+        current_spreadsheet_id = create_new_sheet()
 
     # Start the bot in a separate thread
     bot_thread = threading.Thread(target=run_bot)
