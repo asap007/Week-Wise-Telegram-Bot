@@ -12,6 +12,7 @@ from google.oauth2.service_account import Credentials
 from google.oauth2 import service_account
 from dotenv import load_dotenv
 from telegram.error import TelegramError, Unauthorized, BadRequest, TimedOut, NetworkError
+from pymongo import MongoClient
 
 # Set up logging
 logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO)
@@ -19,6 +20,12 @@ logger = logging.getLogger(__name__)
 
 # Load environment variables
 load_dotenv()
+
+# MongoDB setup
+MONGO_URI = os.getenv('MONGO_URI')
+client = MongoClient(MONGO_URI)
+db = client['telegram_bot_db']
+bot_data_collection = db['bot_data']
 
 # Initialize Flask app
 app = Flask(__name__)
@@ -60,23 +67,23 @@ spreadsheet_ids = {}
 
 
 def save_data():
+    global spreadsheet_ids, week_count, last_sheet_creation_date, current_spreadsheet_id
     data = {
         'spreadsheet_ids': spreadsheet_ids,
         'week_count': week_count,
-        'last_sheet_creation_date': last_sheet_creation_date.isoformat() if last_sheet_creation_date else None
+        'last_sheet_creation_date': last_sheet_creation_date.isoformat() if last_sheet_creation_date else None,
+        'current_spreadsheet_id': current_spreadsheet_id
     }
-    with open(DATA_FILE, 'w') as f:
-        json.dump(data, f)
+    bot_data_collection.update_one({}, {'$set': data}, upsert=True)
 
 def load_data():
     global spreadsheet_ids, week_count, last_sheet_creation_date, current_spreadsheet_id
-    if os.path.exists(DATA_FILE):
-        with open(DATA_FILE, 'r') as f:
-            data = json.load(f)
-        spreadsheet_ids = data['spreadsheet_ids']
-        week_count = data['week_count']
-        last_sheet_creation_date = datetime.fromisoformat(data['last_sheet_creation_date']) if data['last_sheet_creation_date'] else None
-        current_spreadsheet_id = spreadsheet_ids.get(str(week_count))
+    data = bot_data_collection.find_one()
+    if data:
+        spreadsheet_ids = data.get('spreadsheet_ids', {})
+        week_count = data.get('week_count', 1)
+        last_sheet_creation_date = datetime.fromisoformat(data['last_sheet_creation_date']) if data.get('last_sheet_creation_date') else None
+        current_spreadsheet_id = data.get('current_spreadsheet_id')
     else:
         spreadsheet_ids = {}
         week_count = 1
@@ -115,7 +122,7 @@ def create_new_sheet():
             body={'type': 'user', 'role': 'writer', 'emailAddress': USER_EMAIL}
         ).execute()
         
-        spreadsheet_ids[week_count] = current_spreadsheet_id 
+        spreadsheet_ids[str(week_count)] = current_spreadsheet_id 
         week_count += 1
         last_sheet_creation_date = datetime.now()
         save_data()
@@ -505,16 +512,48 @@ def error_handler(update: Update, context: CallbackContext):
         # handle all other telegram related errors
         logger.info(f"Telegram error for chat {update.effective_chat.id}")
 
-def run_bot():
+# def run_bot():
+#     updater = Updater(TELEGRAM_TOKEN, use_context=True)
+#     dp = updater.dispatcher
+
+#     dp.add_handler(CommandHandler("start", start))
+#     dp.add_handler(CommandHandler("newweek", new_week))
+#     dp.add_handler(CommandHandler("exportcsv", export_as_csv))
+#     dp.add_handler(CommandHandler("listweeks", list_weeks))
+#     dp.add_handler(CommandHandler("addadmin", add_admin))
+#     dp.add_handler(CommandHandler("help", help_command))
+#     dp.add_handler(CommandHandler("help", help_command))
+#     dp.add_handler(CommandHandler("broadcast", broadcast))
+#     dp.add_handler(CommandHandler("removeadmin", remove_admin))
+#     dp.add_handler(CallbackQueryHandler(see_answers, pattern='^see_answers_'))
+#     dp.add_handler(CommandHandler("editquestions", edit_questions))
+#     dp.add_handler(CallbackQueryHandler(button))
+#     dp.add_handler(MessageHandler(Filters.text & ~Filters.command, receive_response))
+
+#     # Add error handler
+#     dp.add_error_handler(error_handler)
+
+#     updater.start_polling(drop_pending_updates=True)
+#     updater.idle()
+
+def main():
+    global current_spreadsheet_id, last_sheet_creation_date
+    load_data()  # Load saved data
+    if not current_spreadsheet_id:
+        current_spreadsheet_id = create_new_sheet()
+
+    # Create the updater and pass it your bot's token
     updater = Updater(TELEGRAM_TOKEN, use_context=True)
+
+    # Get the dispatcher to register handlers
     dp = updater.dispatcher
 
+    # Register all your handlers here
     dp.add_handler(CommandHandler("start", start))
     dp.add_handler(CommandHandler("newweek", new_week))
     dp.add_handler(CommandHandler("exportcsv", export_as_csv))
     dp.add_handler(CommandHandler("listweeks", list_weeks))
     dp.add_handler(CommandHandler("addadmin", add_admin))
-    dp.add_handler(CommandHandler("help", help_command))
     dp.add_handler(CommandHandler("help", help_command))
     dp.add_handler(CommandHandler("broadcast", broadcast))
     dp.add_handler(CommandHandler("removeadmin", remove_admin))
@@ -526,24 +565,18 @@ def run_bot():
     # Add error handler
     dp.add_error_handler(error_handler)
 
+    # Start the Bot
     updater.start_polling(drop_pending_updates=True)
-    updater.idle()
 
-def main():
-    global current_spreadsheet_id, last_sheet_creation_date
-    load_data()  # Load saved data
-    if not current_spreadsheet_id:
-        current_spreadsheet_id = create_new_sheet()
-
-    # Start the bot in a separate thread
-    bot_thread = threading.Thread(target=run_bot)
-    bot_thread.start()
-
-    # Run the Flask app in the main thread
+    # Run the Flask app
     port = int(os.environ.get('PORT', 5000))
     app.run(host='0.0.0.0', port=port)
 
+    # Run the bot until you press Ctrl-C or the process receives SIGINT, SIGTERM or SIGABRT
+    updater.idle()
+
 if __name__ == '__main__':
     main()
+
 
 
