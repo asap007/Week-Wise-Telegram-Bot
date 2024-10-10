@@ -35,21 +35,38 @@ app = Flask(__name__)
 def home():
     return jsonify({"message": "Bot is running"})
 
-
+# Telegram configuration
 TELEGRAM_TOKEN = os.getenv('TELEGRAM_TOKEN')
 DATA_FILE = 'bot_data.json'
-MAIN_ADMIN_ID = int(os.getenv('MAIN_ADMIN_ID'))  # Single main admin
-ADMIN_IDS = [int(x) for x in os.getenv('ADMIN_IDS', '').split(',') if x]  # Initial list of sub-admins
+MAIN_ADMIN_ID = int(os.getenv('MAIN_ADMIN_ID'))
+ADMIN_IDS = [int(x) for x in os.getenv('ADMIN_IDS', '').split(',') if x]
 USER_EMAIL = os.getenv('USER_EMAIL')
 
 user_message_ids = {}
 
 # Google Sheets setup
 SCOPE = ['https://www.googleapis.com/auth/spreadsheets', 'https://www.googleapis.com/auth/drive.file']
-# Load credentials from the JSON file
-credentials = service_account.Credentials.from_service_account_file(
-    'credentials.json', scopes=SCOPE
+
+# Create credentials from environment variables
+credentials_dict = {
+    "type": os.getenv('GOOGLE_TYPE', 'service_account'),
+    "project_id": os.getenv('GOOGLE_PROJECT_ID'),
+    "private_key_id": os.getenv('GOOGLE_PRIVATE_KEY_ID'),
+    "private_key": os.getenv('GOOGLE_PRIVATE_KEY').replace('\\n', '\n'),
+    "client_email": os.getenv('GOOGLE_CLIENT_EMAIL'),
+    "client_id": os.getenv('GOOGLE_CLIENT_ID'),
+    "auth_uri": os.getenv('GOOGLE_AUTH_URI', 'https://accounts.google.com/o/oauth2/auth'),
+    "token_uri": os.getenv('GOOGLE_TOKEN_URI', 'https://oauth2.googleapis.com/token'),
+    "auth_provider_x509_cert_url": os.getenv('GOOGLE_AUTH_PROVIDER_CERT_URL', 'https://www.googleapis.com/oauth2/v1/certs'),
+    "client_x509_cert_url": os.getenv('GOOGLE_CLIENT_CERT_URL'),
+    "universe_domain": os.getenv('GOOGLE_UNIVERSE_DOMAIN', 'googleapis.com')
+}
+
+credentials = service_account.Credentials.from_service_account_info(
+    credentials_dict,
+    scopes=SCOPE
 )
+
 # Build the service
 service = build('sheets', 'v4', credentials=credentials)
 
